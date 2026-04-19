@@ -1,0 +1,12 @@
+numpy
+pygame
+sounddevice
+pynput
+
+# Choose ONE accelerometer backend:
+# Option A (older split packages)
+winrt-runtime
+winrt-Windows.Devices.Sensors
+
+# Option B (recommended single package)
+winsdk
