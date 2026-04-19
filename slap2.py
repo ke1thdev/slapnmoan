@@ -1,5 +1,5 @@
 ﻿"""
-SlapMoan - Slap your laptop, it moans.
+SlapnMoan - Slap your laptop, it moans.
 """
 
 import math
@@ -16,8 +16,19 @@ import webbrowser
 from pathlib import Path
 from tkinter import ttk
 
-import numpy as np
-import pygame
+try:
+    import numpy as np
+    NUMPY_AVAILABLE = True
+except ImportError:
+    np = None
+    NUMPY_AVAILABLE = False
+
+try:
+    import pygame
+    PYGAME_AVAILABLE = True
+except ImportError:
+    pygame = None
+    PYGAME_AVAILABLE = False
 
 try:
     import sounddevice as sd
@@ -93,6 +104,8 @@ WINSDK_DEP_PACKAGES = {"winsdk"}
 def load_moan_sounds() -> tuple[list, list]:
     sounds = []
     names = []
+    if not PYGAME_AVAILABLE:
+        return sounds, names
 
     if MOANS_DIR.exists():
         files = sorted(
@@ -111,7 +124,7 @@ def load_moan_sounds() -> tuple[list, list]:
             except Exception as e:
                 print(f"[Sound] Failed to load {f.name}: {e}")
 
-    if not sounds:
+    if not sounds and NUMPY_AVAILABLE:
         print("[Sound] No valid moans found, using fallback synth tone")
         sounds = [_synth_fallback()]
         names = ["Synth Tone"]
@@ -119,7 +132,7 @@ def load_moan_sounds() -> tuple[list, list]:
     return sounds, names
 
 
-def _synth_fallback() -> pygame.mixer.Sound:
+def _synth_fallback():
     sr = 44100
     t = np.linspace(0, 0.9, int(sr * 0.9), dtype=np.float32)
     f = 300 * np.exp(-2.5 * t) + 12 * np.sin(2 * np.pi * 5.5 * t)
@@ -164,6 +177,7 @@ class SlapMoanApp:
         self.dep_vars = {}
         self.dep_state_labels = {}
         self.dep_checkbuttons = {}
+        self.dep_checkbuttons = {}
         self.dep_status_var = tk.StringVar(value="Dependency installer: ready")
         self.installing_dependencies = False
         self.dep_dialog = None
@@ -171,7 +185,13 @@ class SlapMoanApp:
         self.dep_skip_btn = None
         self.dep_install_python_btn = None
 
-        pygame.mixer.init(frequency=SAMPLE_RATE, size=-16, channels=2, buffer=512)
+        self.audio_ready = False
+        if PYGAME_AVAILABLE:
+            try:
+                pygame.mixer.init(frequency=SAMPLE_RATE, size=-16, channels=2, buffer=512)
+                self.audio_ready = True
+            except Exception as e:
+                print(f"[Audio] pygame mixer init failed: {e}")
         self.moan_sounds, self.sound_names = load_moan_sounds()
 
         self._build_ui()
@@ -179,7 +199,7 @@ class SlapMoanApp:
         self.root.after(200, self._maybe_open_dependency_modal)
 
     def _build_ui(self):
-        self.root.title("SlapMoan")
+        self.root.title("SlapnMoan")
         self.root.geometry("470x760")
         self.root.minsize(420, 620)
         self.root.resizable(True, True)
@@ -248,7 +268,7 @@ class SlapMoanApp:
 
         tk.Label(
             panel,
-            text="SlapMoan",
+            text="SlapnMoan",
             font=("Segoe UI", 24, "bold"),
             bg="#0d0d0d",
             fg="#ff4d6d",
@@ -562,11 +582,9 @@ class SlapMoanApp:
             return False
 
     def _python_available(self) -> bool:
-        if Path(sys.executable).exists():
-            return True
-        return bool(shutil.which("py") or shutil.which("python"))
+        return Path(sys.executable).exists() or bool(shutil.which("py") or shutil.which("python"))
 
-    def _dependency_snapshot(self) -> tuple[dict[str, bool], list[str], list[str], bool, bool]:
+    def _dependency_snapshot(self) -> tuple[dict[str, bool], list[str], list[str], list[str], bool, bool]:
         installed = {}
         for pkg, module_name, _desc in DEPENDENCY_OPTIONS:
             installed[pkg] = self._module_installed(module_name)
@@ -577,15 +595,19 @@ class SlapMoanApp:
             self._module_installed("winrt.windows.devices.sensors")
             or self._module_installed("winsdk.windows.devices.sensors")
         )
+        missing_required = list(missing_core)
+        if not accel_ready:
+            # Require at least one accel backend, not both stacks.
+            missing_required.append("winsdk")
         python_ok = self._python_available()
-        return installed, missing_core, missing_any, accel_ready, python_ok
+        return installed, missing_core, missing_required, missing_any, accel_ready, python_ok
 
     def _maybe_open_dependency_modal(self):
         if self.dep_dialog is not None and self.dep_dialog.winfo_exists():
             return
 
-        _installed, missing_core, missing_any, accel_ready, python_ok = self._dependency_snapshot()
-        if not missing_any and python_ok:
+        _installed, missing_core, missing_required, missing_any, accel_ready, python_ok = self._dependency_snapshot()
+        if not missing_required:
             try:
                 self.root.attributes("-alpha", 1.0)
             except Exception:
@@ -594,9 +616,9 @@ class SlapMoanApp:
             self.root.deiconify()
             self.root.lift()
             return
-        self._open_dependency_modal(missing_core, missing_any, accel_ready, python_ok)
+        self._open_dependency_modal(missing_core, missing_required, missing_any, accel_ready, python_ok)
 
-    def _open_dependency_modal(self, missing_core: list[str], missing_any: list[str], accel_ready: bool, python_ok: bool):
+    def _open_dependency_modal(self, missing_core: list[str], missing_required: list[str], missing_any: list[str], accel_ready: bool, python_ok: bool):
         self.dep_dialog = tk.Toplevel(self.root)
         self.dep_dialog.title("Dependency Setup")
         self.dep_dialog.geometry("560x440")
@@ -628,8 +650,8 @@ class SlapMoanApp:
         ).pack(anchor="w")
 
         summary = []
-        if missing_any:
-            summary.append(f"{len(missing_any)} package(s) are missing.")
+        if missing_required:
+            summary.append(f"{len(missing_required)} required package(s) are missing.")
         if missing_core:
             summary.append("Core packages are missing.")
         if not accel_ready:
@@ -804,7 +826,7 @@ class SlapMoanApp:
         self._refresh_dependency_status()
 
     def _refresh_dependency_status(self):
-        installed, missing_core, missing_any, accel_ready, python_ok = self._dependency_snapshot()
+        installed, missing_core, missing_required, missing_any, accel_ready, python_ok = self._dependency_snapshot()
 
         for pkg, _module_name, _desc in DEPENDENCY_OPTIONS:
             lbl = self.dep_state_labels.get(pkg)
@@ -820,12 +842,12 @@ class SlapMoanApp:
                 else:
                     cb.config(state=tk.NORMAL)
 
-        if not missing_any and python_ok:
+        if not missing_required:
             self.dep_status_var.set("All dependencies required for full features are installed.")
         else:
             parts = []
-            if missing_any:
-                parts.append("Missing: " + ", ".join(sorted(missing_any)))
+            if missing_required:
+                parts.append("Required missing: " + ", ".join(sorted(set(missing_required))))
             if missing_core:
                 parts.append("Missing core: " + ", ".join(sorted(missing_core)))
             if not accel_ready:
@@ -835,7 +857,7 @@ class SlapMoanApp:
             self.dep_status_var.set(" | ".join(parts))
 
     def _selected_packages(self) -> list[str]:
-        installed, _missing_core, _missing_any, _accel_ready, _python_ok = self._dependency_snapshot()
+        installed, _missing_core, _missing_required, _missing_any, _accel_ready, _python_ok = self._dependency_snapshot()
         return [pkg for pkg, var in self.dep_vars.items() if var.get() and not installed.get(pkg, False)]
 
     def _set_dependency_preset(self, preset: str):
@@ -845,7 +867,7 @@ class SlapMoanApp:
         elif preset == "winsdk":
             selected |= WINSDK_DEP_PACKAGES
 
-        installed, _missing_core, _missing_any, _accel_ready, _python_ok = self._dependency_snapshot()
+        installed, _missing_core, _missing_required, _missing_any, _accel_ready, _python_ok = self._dependency_snapshot()
         for pkg, var in self.dep_vars.items():
             var.set((pkg in selected) and (not installed.get(pkg, False)))
 
@@ -1013,8 +1035,8 @@ class SlapMoanApp:
         self._refresh_dependency_status()
 
         if success:
-            installed, missing_core, missing_any, accel_ready, python_ok = self._dependency_snapshot()
-            if not missing_any and python_ok:
+            installed, missing_core, missing_required, missing_any, accel_ready, python_ok = self._dependency_snapshot()
+            if not missing_required:
                 self.dep_status_var.set("Install complete. Dependencies look good, continuing to app...")
                 self._detect_and_badge()
                 self.root.after(400, self._close_dependency_modal)
@@ -1060,8 +1082,7 @@ class SlapMoanApp:
             devices = sd.query_devices()
             return any(d.get("max_input_channels", 0) > 0 for d in devices)
         except Exception:
-            # Keep mic badge available when backend exists but device query is flaky.
-            return True
+            return False
 
     def _mic_input_candidates(self) -> list[tuple[int, int, str]]:
         candidates = []
@@ -1487,7 +1508,12 @@ class SlapMoanApp:
         self.root.after(
             900,
             lambda: self.running and self._set_status(
-                f"Listening... slap it!\nMode: {self.detector_mode_var.get()} | Accel: {self._last_accel_backend}",
+                (
+                    f"Listening... slap it!\n"
+                    f"Mode: {self.detector_mode_var.get()} | "
+                    f"Mic: {self._last_mic_device if self._audio_stream else 'Unavailable'} | "
+                    f"Accel: {self._last_accel_backend}"
+                ),
                 "#4dff91",
             ),
         )
@@ -1510,7 +1536,11 @@ class SlapMoanApp:
             pass
         self._close_dependency_modal()
         self.stop()
-        pygame.mixer.quit()
+        if PYGAME_AVAILABLE:
+            try:
+                pygame.mixer.quit()
+            except Exception:
+                pass
 
 
 if __name__ == "__main__":
